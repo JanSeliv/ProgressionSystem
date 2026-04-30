@@ -11,7 +11,6 @@
 
 // Bomber
 #include "Actors/BmrPawn.h"
-#include "Components/BmrMapComponent.h"
 #include "Components/BmrSkeletalMeshComponent.h"
 #include "GameFramework/BmrPlayerState.h"
 #include "MyDataTable/MyDataTable.h"
@@ -65,9 +64,11 @@ void UPSWorldSubsystem::SetCurrentRowByTag(FBmrPlayerTag NewRowPlayerTag)
 	const FPSSettingsRow& CurrentSettingsRowData = GetCurrentProgressionSettingsRow();
 	const FBmrPlayerTag& PreviousPlayerTag = CurrentSettingsRowData.Character;
 
-	// Already on this row: skip to avoid re-entry via OnActorTypeChanged -> OnPlayerTypeChanged -> SetCurrentRowByTag
+	// Already on this row: skip to avoid re-entry via OnActorTypeChanged -> OnChosenMeshDataChanged -> SetCurrentRowByTag
 	if (PreviousPlayerTag == NewRowPlayerTag)
 	{
+		// Row state already correct, just notify listeners, so skin-driven updates can reevaluate
+		OnCurrentActiveSaveRowChanged.Broadcast(NewRowPlayerTag, PreviousPlayerTag);
 		return;
 	}
 
@@ -193,19 +194,16 @@ void UPSWorldSubsystem::OnWorldSubSystemInitialize_Implementation()
 void UPSWorldSubsystem::OnLocalPawnReady_Implementation(const FGameplayEventData& Payload)
 {
 	const ABmrPawn* PlayerCharacter = Cast<ABmrPawn>(Payload.Instigator);
-	UBmrMapComponent* MapComponent = UBmrMapComponent::GetMapComponent(PlayerCharacter);
-	checkf(MapComponent, TEXT("ERROR: [%i] %hs:\n'MapComponent' is null!"), __LINE__, __FUNCTION__);
-	MapComponent->OnActorTypeChanged.AddUniqueDynamic(this, &ThisClass::OnPlayerTypeChanged);
-
 	ABmrPlayerState* PlayerState = PlayerCharacter ? PlayerCharacter->GetPlayerState<ABmrPlayerState>() : nullptr;
 	checkf(PlayerState, TEXT("ERROR: [%i] %hs:\n'PlayerState' is null!"), __LINE__, __FUNCTION__);
 	PlayerState->OnEndGameStateChanged.AddUniqueDynamic(this, &ThisClass::OnEndGameStateChanged);
+	PlayerState->OnChosenMeshDataChanged.AddUniqueDynamic(this, &ThisClass::OnChosenMeshDataChanged);
 }
 
 // Is called when a player has been changed
-void UPSWorldSubsystem::OnPlayerTypeChanged_Implementation(UBmrMapComponent* MapComponent)
+void UPSWorldSubsystem::OnChosenMeshDataChanged_Implementation(const FBmrMeshData& NewMeshData)
 {
-	const ABmrPawn* PlayerCharacter = MapComponent->GetOwner<ABmrPawn>();
+	const ABmrPawn* PlayerCharacter = UBmrBlueprintFunctionLibrary::GetLocalPawn();
 	if (ensureMsgf(PlayerCharacter, TEXT("ASSERT: [%i] %hs:\n'PlayerCharacter' is invalid!"), __LINE__, __FUNCTION__))
 	{
 		SetCurrentRowByTag(PlayerCharacter->GetPlayerTag());

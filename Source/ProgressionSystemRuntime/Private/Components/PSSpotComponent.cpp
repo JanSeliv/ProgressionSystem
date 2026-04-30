@@ -10,9 +10,9 @@
 // Bomber
 #include "Actors/BmrPawn.h"
 #include "Bomber.h"
-#include "Components/BmrMapComponent.h"
 #include "Components/BmrSkeletalMeshComponent.h"
 #include "GameFramework/BmrGameState.h"
+#include "GameFramework/BmrPlayerState.h"
 #include "Structures/BmrGameStateTag.h"
 #include "Structures/BmrGameplayTags.h"
 #include "Subsystems/GlobalMessageSubsystem.h"
@@ -104,6 +104,12 @@ void UPSSpotComponent::OnUnregister()
 	constexpr bool bSpotUnlocked = true;
 	GetMeshChecked().SetActive(bSpotUnlocked);
 
+	if (UPSWorldSubsystem* WorldSubsystem = UPSWorldSubsystem::GetSubsystem())
+	{
+		WorldSubsystem->OnInitialize.RemoveAll(this);
+		WorldSubsystem->OnReset.RemoveAll(this);
+	}
+
 	Super::OnUnregister();
 }
 
@@ -143,6 +149,12 @@ void UPSSpotComponent::TryRestorePlayerSkin()
 // Updates the progression menu widget when player changed
 void UPSSpotComponent::OnCurrentActiveSaveRowChanged_Implementation(const FBmrPlayerTag NewPlayerTag, const FBmrPlayerTag PreviousPlayerTag)
 {
+	if (PreviousPlayerTag == NewPlayerTag)
+	{
+		// Skip this skin-only update for the same character, this callback only processess character switches
+		return;
+	}
+
 	UBmrSkeletalMeshComponent& Mesh = GetMeshChecked();
 	if (Mesh.GetPlayerTag() == NewPlayerTag)
 	{
@@ -177,7 +189,10 @@ void UPSSpotComponent::ChangeSpotVisibilityStatus(UBmrSkeletalMeshComponent* Mes
 // Refresh Amount Of Unlocked skins for the character (level)s
 void UPSSpotComponent::RefreshAmountOfUnlockedSkins(bool bApplySkin)
 {
-	if (!IsCurrentSpot())
+	const ABmrPawn* PlayerCharacter = UBmrBlueprintFunctionLibrary::GetLocalPawn();
+	ABmrPlayerState* PlayerState = PlayerCharacter ? PlayerCharacter->GetPlayerState<ABmrPlayerState>() : nullptr;
+	if (!ensureMsgf(PlayerState, TEXT("ASSERT: [%i] %hs:\n'PlayerState' is not valid!"), __LINE__, __FUNCTION__)
+	    || !IsCurrentSpot())
 	{
 		return;
 	}
@@ -213,15 +228,13 @@ void UPSSpotComponent::RefreshAmountOfUnlockedSkins(bool bApplySkin)
 	for (int32 Index = CurrentSkinIndex; Index <= UnlockedSkinsAmount; Index++)
 	{
 		SpotMeshComponent.SetSkinAvailable(true, Index);
-		if (bApplySkin)
-		{
-			SpotMeshComponent.ApplySkinByIndex(Index);
-			const ABmrPawn* PlayerCharacter = UBmrBlueprintFunctionLibrary::GetLocalPawn();
-			if (UBmrMapComponent* MapComponent = UBmrMapComponent::GetMapComponent(PlayerCharacter))
-			{
-				MapComponent->SetReplicatedMeshData(SpotMeshComponent.GetMeshData());
-			}
-		}
+	}
+
+	if (bApplySkin)
+	{
+		// Apply only the highest unlocked skin once
+		SpotMeshComponent.ApplySkinByIndex(UnlockedSkinsAmount);
+		PlayerState->SetChosenMeshData(SpotMeshComponent.GetMeshData());
 	}
 }
 

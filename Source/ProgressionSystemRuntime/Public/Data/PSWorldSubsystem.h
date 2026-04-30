@@ -47,7 +47,8 @@ public:
 	void SetCurrentRowByTag(FBmrPlayerTag NewRowPlayerTag);
 
 	/* Each level has its own row. Each row is tied to a character
-	 * Delegate is called after chosen character was changed so the active save row in save instance also changed */
+	 * Delegate is called after chosen mesh is applied for the current active save row,
+	 * fires on character switch (NewPlayerTag != PreviousPlayerTag) and on skin-only updates within the same character (NewPlayerTag == PreviousPlayerTag) */
 	UPROPERTY(BlueprintAssignable, Transient, Category = "C++")
 	FCurrentActiveSaveRowChanged OnCurrentActiveSaveRowChanged;
 
@@ -193,7 +194,7 @@ protected:
 
 	/** Is called when a player has been changed */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
-	void OnPlayerTypeChanged(class UBmrMapComponent* MapComponent);
+	void OnChosenMeshDataChanged(const struct FBmrMeshData& NewMeshData);
 
 	/** Called when the end game state was changed to recalculate progression according to endgame (win, loss etc.)  */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
