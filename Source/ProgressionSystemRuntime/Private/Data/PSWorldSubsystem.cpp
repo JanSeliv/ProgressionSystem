@@ -17,6 +17,7 @@
 #include "MyUtilsLibraries/SaveUtilsLibrary.h"
 #include "MyUtilsLibraries/UtilsLibrary.h"
 #include "PoolManagerSubsystem.h"
+#include "Structures/BmrGameStateTag.h"
 #include "Structures/BmrGameplayTags.h"
 #include "Subsystems/GlobalMessageSubsystem.h"
 #include "UtilityLibraries/BmrBlueprintFunctionLibrary.h"
@@ -171,6 +172,7 @@ void UPSWorldSubsystem::OnInitialized_Implementation()
 
 	// Subscribe events on player type changed and Character spawned
 	UGlobalMessageSubsystem::CallOrStartListeningForGlobalMessage(BmrGameplayTags::Event::Player_LocalPawnReady, this, &ThisClass::OnLocalPawnReady);
+	UGlobalMessageSubsystem::CallOrStartListeningForGlobalMessage(BmrGameplayTags::Event::GameState_Changed, this, &ThisClass::OnGameStateChanged);
 }
 
 // Clears all transient data created by this subsystem
@@ -203,10 +205,20 @@ void UPSWorldSubsystem::OnLocalPawnReady_Implementation(const FGameplayEventData
 // Is called when a player has been changed
 void UPSWorldSubsystem::OnChosenMeshDataChanged_Implementation(const FBmrMeshData& NewMeshData)
 {
-	const ABmrPawn* PlayerCharacter = UBmrBlueprintFunctionLibrary::GetLocalPawn();
-	if (ensureMsgf(PlayerCharacter, TEXT("ASSERT: [%i] %hs:\n'PlayerCharacter' is invalid!"), __LINE__, __FUNCTION__))
+	const ABmrPlayerState* PlayerState = UBmrBlueprintFunctionLibrary::GetLocalPlayerState();
+	if (ensureMsgf(PlayerState, TEXT("ASSERT: [%i] %hs:\n'PlayerState' is invalid!"), __LINE__, __FUNCTION__))
 	{
-		SetCurrentRowByTag(PlayerCharacter->GetPlayerTag());
+		SetCurrentRowByTag(PlayerState->GetPlayerTag());
+	}
+}
+
+// Listen to react when entered the Menu state
+void UPSWorldSubsystem::OnGameStateChanged_Implementation(const FGameplayEventData& Payload)
+{
+	// Refreshes star actors when returning to the Menu
+	if (Payload.InstigatorTags.HasTag(FBmrGameStateTag::Menu))
+	{
+		UpdateProgressionStarActors();
 	}
 }
 
@@ -246,13 +258,13 @@ void UPSWorldSubsystem::SetFirstElementAsCurrent()
 
 	CurrentRowNameInternal = FirstSaveToDiskRow;
 	SaveGameDataInternal->UnlockLevelByName(CurrentRowNameInternal);
-	ABmrPawn* PlayerCharacter = UBmrBlueprintFunctionLibrary::GetLocalPawn();
+	ABmrPlayerState* PlayerState = UBmrBlueprintFunctionLibrary::GetLocalPlayerState();
 
-	if (!ensureMsgf(PlayerCharacter, TEXT("ASSERT: [%i] %hs:\n'PlayerCharacter' is not valid!"), __LINE__, __FUNCTION__))
+	if (!ensureMsgf(PlayerState, TEXT("ASSERT: [%i] %hs:\n'PlayerState' is not valid!"), __LINE__, __FUNCTION__))
 	{
 		return;
 	}
-	const FBmrPlayerTag& PlayerTag = PlayerCharacter->GetPlayerTag();
+	const FBmrPlayerTag& PlayerTag = PlayerState->GetPlayerTag();
 	SetCurrentRowByTag(PlayerTag);
 	SaveDataAsync();
 }
@@ -466,13 +478,13 @@ void UPSWorldSubsystem::UnlockAllLevels()
 	}
 	SaveGameDataInternal->UnlockAllLevels();
 
-	ABmrPawn* PlayerCharacter = UBmrBlueprintFunctionLibrary::GetLocalPawn();
+	ABmrPlayerState* PlayerState = UBmrBlueprintFunctionLibrary::GetLocalPlayerState();
 
-	if (!ensureMsgf(PlayerCharacter, TEXT("ASSERT: [%i] %hs:\n'PlayerCharacter' is not valid!"), __LINE__, __FUNCTION__))
+	if (!ensureMsgf(PlayerState, TEXT("ASSERT: [%i] %hs:\n'PlayerState' is not valid!"), __LINE__, __FUNCTION__))
 	{
 		return;
 	}
-	const FBmrPlayerTag& PlayerTag = PlayerCharacter->GetPlayerTag();
+	const FBmrPlayerTag& PlayerTag = PlayerState->GetPlayerTag();
 	SetCurrentRowByTag(PlayerTag);
 	SaveDataAsync();
 }
