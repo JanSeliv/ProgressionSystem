@@ -193,6 +193,12 @@ void UPSWorldSubsystem::OnGameFeatureDeinitialize_Implementation()
 
 	UGlobalMessageSubsystem::ClearCachedMessages(PsGameplayTags::Event::ProgressionSystemInitialized, this);
 
+	if (ABmrPlayerState* PlayerState = UBmrBlueprintFunctionLibrary::GetLocalPlayerState())
+	{
+		PlayerState->OnEndGameStateChanged.RemoveAll(this);
+		PlayerState->OnChosenMeshDataChanged.RemoveAll(this);
+	}
+
 	PerformCleanUp();
 }
 
@@ -218,6 +224,12 @@ void UPSWorldSubsystem::OnLocalPawnReady_Implementation(const FGameplayEventData
 // Is called when a player has been changed
 void UPSWorldSubsystem::OnChosenMeshDataChanged_Implementation(const FBmrMeshData& NewMeshData)
 {
+	if (!SaveGameDataInternal)
+	{
+		// Skip: subsystem deactivated mid GFP reload (or save not async-loaded yet), OnAsyncLoadGameFromSlotCompleted re-applies it once save is back
+		return;
+	}
+
 	const ABmrPlayerState* PlayerState = UBmrBlueprintFunctionLibrary::GetLocalPlayerState();
 	if (ensureMsgf(PlayerState, TEXT("ASSERT: [%i] %hs:\n'PlayerState' is invalid!"), __LINE__, __FUNCTION__))
 	{
