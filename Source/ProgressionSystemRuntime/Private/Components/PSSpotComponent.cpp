@@ -2,15 +2,25 @@
 
 #include "Components/PSSpotComponent.h"
 
+// PS
 #include "Components/PSHUDComponent.h"
 #include "Data/PSWorldSubsystem.h"
-#include "Data/PSSaveGameData.h"
-#include "Components/MySkeletalMeshComponent.h"
+#include "PsGameplayTags.h"
+
+// Bomber
+#include "Actors/BmrPawn.h"
+#include "Bomber.h"
+#include "Components/BmrSkeletalMeshComponent.h"
+#include "GameFramework/BmrGameState.h"
+#include "GameFramework/BmrPlayerState.h"
+#include "Structures/BmrGameStateTag.h"
+#include "Structures/BmrGameplayTags.h"
+#include "Structures/BmrMeshData.h"
+#include "Subsystems/GlobalMessageSubsystem.h"
+#include "UtilityLibraries/BmrBlueprintFunctionLibrary.h"
+
+// UE
 #include "Components/StaticMeshComponent.h"
-#include "LevelActors/PlayerCharacter.h"
-#include "Materials/MaterialInstanceDynamic.h"
-#include "Subsystems/GlobalEventsSubsystem.h"
-#include "UtilityLibraries/MyBlueprintFunctionLibrary.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PSSpotComponent)
 
@@ -24,87 +34,215 @@ UPSSpotComponent::UPSSpotComponent()
 }
 
 // Called when progression module ready
-void UPSSpotComponent::OnInitialized_Implementation()
+void UPSSpotComponent::OnInitialized_Implementation(const FGameplayEventData& Payload)
 {
-	// Ensure the component's mesh is properly assigned and not null.
-	PlayerSpotOnLevelInternal = GetMeshChecked();
-
-	UPSWorldSubsystem::Get().OnCurrentRowDataChanged.AddDynamic(this, &ThisClass::OnPlayerTypeChanged);
-	// Subscribe events on player type changed and Character spawned
-	BIND_ON_LOCAL_CHARACTER_READY(this, ThisClass::OnLocalCharacterReady);
-
-	ChangeSpotVisibilityStatus();
+	UPSWorldSubsystem& WorldSubsystem = UPSWorldSubsystem::Get();
+	WorldSubsystem.OnCurrentActiveSaveRowChanged.AddUniqueDynamic(this, &ThisClass::OnCurrentActiveSaveRowChanged);
+	UGlobalMessageSubsystem::CallOrStartListeningForGlobalMessage(BmrGameplayTags::Event::GameState_Changed, this, &ThisClass::OnGameStateChanged);
+	constexpr bool bApplySkin = false;
+	RefreshAmountOfUnlockedSkins(bApplySkin);
 
 	// Save reference of this component to the world subsystem
-	UPSWorldSubsystem::Get().RegisterSpotComponent(this);
+	WorldSubsystem.RegisterSpotComponent(this);
+}
+
+// Once the save file is reset the spot component needs to reset skins
+void UPSSpotComponent::OnReset_Implementation()
+{
+	// reset
+	UBmrSkeletalMeshComponent& SpotMeshComponent = GetMeshChecked();
+	for (int32 Index = 1; Index < SpotMeshComponent.GetSkinTexturesNum(); Index++)
+	{
+		SpotMeshComponent.SetSkinAvailable(false, Index);
+	}
+}
+
+// Listen game states to switch character skin.
+void UPSSpotComponent::OnGameStateChanged_Implementation(const FGameplayEventData& Payload)
+{
+	if (!IsCurrentSpot())
+	{
+		return;
+	}
+
+	if (Payload.InstigatorTags.HasTag(FBmrGameStateTag::GameStarting))
+	{
+		TryRestorePlayerSkin();
+	}
+	else if (Payload.InstigatorTags.HasTag(FBmrGameStateTag::Menu))
+	{
+		constexpr bool bApplySkin = true;
+		RefreshAmountOfUnlockedSkins(bApplySkin);
+	}
 }
 
 // Called when the game starts
 void UPSSpotComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	UPSWorldSubsystem::Get().OnInitialize.AddDynamic(this, &ThisClass::OnInitialized);
+
+	// Skeletal mesh actor should own this tag, used to prevent initializing PS spots on other skeletal mesh actors, like from cinematics
+	static const FName ExpectedTagName = PsGameplayTags::Menu::Spot.GetTag().GetTagName();
+	if (!GetOwner()->ActorHasTag(ExpectedTagName))
+	{
+		UE_LOG(LogBomber, Log, TEXT("[%i] %hs: Skip initializing '%s' spot for '%s' actor, it doesn't have '%s' tag."),
+		    __LINE__, __FUNCTION__, *GetNameSafe(this), *GetNameSafe(GetOwner()), *ExpectedTagName.ToString());
+		return;
+	}
+
+	UPSWorldSubsystem& WorldSubsystem = UPSWorldSubsystem::Get();
+	UGlobalMessageSubsystem::CallOrStartListeningForGlobalMessage(PsGameplayTags::Event::ProgressionSystemInitialized, this, &ThisClass::OnInitialized);
+	WorldSubsystem.OnReset.AddDynamic(this, &ThisClass::OnReset);
+	OnReset();
 }
 
 // Clears all transient data created by this component.
 void UPSSpotComponent::OnUnregister()
 {
-	// reset back to initial state. By default, the spot is unlocked 
+	UGlobalMessageSubsystem::StopListeningForAllGlobalMessages(this);
+
+	// reset back to initial state. By default, the spot and all its skins are unlocked
+	UBmrSkeletalMeshComponent& SpotMeshComponent = GetMeshChecked();
 	constexpr bool bSpotUnlocked = true;
-	if (PlayerSpotOnLevelInternal)
+	SpotMeshComponent.SetActive(bSpotUnlocked);
+
+	// Restore skins that progression locked in OnReset, so they stay unlocked once this module is gone
+	SpotMeshComponent.SetSkinAvailabilityMask(FBmrMeshData::AllSkinsAvailableMask);
+
+	if (UPSWorldSubsystem* WorldSubsystem = UPSWorldSubsystem::GetSubsystem())
 	{
-		PlayerSpotOnLevelInternal->SetActive(bSpotUnlocked);
-		PlayerSpotOnLevelInternal = nullptr;
+		WorldSubsystem->OnReset.RemoveAll(this);
 	}
 
 	Super::OnUnregister();
 }
 
-// Returns the Skeletal Mesh of the Bomber character
-UMySkeletalMeshComponent* UPSSpotComponent::GetMySkeletalMeshComponent() const
+// Check is player is allowed to play with current skin if not switch to allowed
+void UPSSpotComponent::TryRestorePlayerSkin()
 {
-	return GetOwner()->FindComponentByClass<UMySkeletalMeshComponent>();
+	// it's possible that spot might not be loaded till that time so no ensure added
+	const UPSSpotComponent* CurrentSpot = UPSWorldSubsystem::Get().GetCurrentSpot();
+	if (CurrentSpot == nullptr || CurrentSpot != this)
+	{
+		return;
+	}
+
+	UBmrSkeletalMeshComponent& MeshComp = GetMeshChecked();
+	const int32 CurrentSkinIndex = MeshComp.GetAppliedSkinIndex();
+
+	// Current skins is available no need to switch to last avaialble
+	if (MeshComp.IsSkinAvailable(CurrentSkinIndex))
+	{
+		return;
+	}
+
+	// find last unlocked skin
+	for (int32 Count = CurrentSkinIndex; Count >= 0; Count--)
+	{
+		if (Count == 0 || MeshComp.IsSkinAvailable(Count))
+		{
+			MeshComp.ApplySkinByIndex(Count);
+
+			constexpr bool bApplySkin = true;
+			RefreshAmountOfUnlockedSkins(bApplySkin);
+			break;
+		}
+	}
+}
+
+// Updates the progression menu widget when player changed
+void UPSSpotComponent::OnCurrentActiveSaveRowChanged_Implementation(const FBmrPlayerTag NewPlayerTag, const FBmrPlayerTag PreviousPlayerTag)
+{
+	if (PreviousPlayerTag == NewPlayerTag)
+	{
+		// Skip this skin-only update for the same character, this callback only processess character switches
+		return;
+	}
+
+	UBmrSkeletalMeshComponent& Mesh = GetMeshChecked();
+	if (Mesh.GetPlayerTag() == NewPlayerTag)
+	{
+		ChangeSpotVisibilityStatus(UPSWorldSubsystem::Get().GetCurrentSaveToDiskRowByName().IsLevelLocked);
+		constexpr bool bApplySkin = false;
+		RefreshAmountOfUnlockedSkins(bApplySkin);
+	}
 }
 
 // Returns the Skeletal Mesh of the Bomber character
-UMySkeletalMeshComponent& UPSSpotComponent::GetMeshChecked() const
+UBmrSkeletalMeshComponent* UPSSpotComponent::GetMySkeletalMeshComponent() const
 {
-	UMySkeletalMeshComponent* Mesh = GetMySkeletalMeshComponent();
+	return GetOwner()->FindComponentByClass<UBmrSkeletalMeshComponent>();
+}
+
+// Returns the Skeletal Mesh of the Bomber character
+UBmrSkeletalMeshComponent& UPSSpotComponent::GetMeshChecked() const
+{
+	UBmrSkeletalMeshComponent* Mesh = GetMySkeletalMeshComponent();
 	ensureMsgf(Mesh, TEXT("ASSERT: [%i] %hs:\n'Mesh' is nullptr, can not get mesh for spot.!"), __LINE__, __FUNCTION__);
 	return *Mesh;
 }
 
-// Is called when a player has been changed
-void UPSSpotComponent::OnPlayerTypeChanged_Implementation(FPlayerTag PlayerTag)
+// Locks or unlocks this spot's mesh by given level-locked state
+void UPSSpotComponent::ChangeSpotVisibilityStatus(bool bIsLevelLocked)
 {
-	UMySkeletalMeshComponent& Mesh = GetMeshChecked();
-	if (Mesh.GetPlayerTag() == PlayerTag)
-	{
-		PlayerSpotOnLevelInternal = Mesh;
-		ChangeSpotVisibilityStatus();
+	GetMeshChecked().SetActive(!bIsLevelLocked);
+}
 
-		// Save reference of this component to the world subsystem
-		UPSWorldSubsystem::Get().SetCurrentSpotComponent(this);
+// Refresh Amount Of Unlocked skins for the character (level)s
+void UPSSpotComponent::RefreshAmountOfUnlockedSkins(bool bApplySkin)
+{
+	ABmrPlayerState* PlayerState = UBmrBlueprintFunctionLibrary::GetLocalPlayerState();
+	if (!ensureMsgf(PlayerState, TEXT("ASSERT: [%i] %hs:\n'PlayerState' is not valid!"), __LINE__, __FUNCTION__)
+	    || !IsCurrentSpot())
+	{
+		return;
+	}
+
+	UBmrSkeletalMeshComponent& SpotMeshComponent = GetMeshChecked();
+	const int32 UnlockedSkinsAmount = UPSWorldSubsystem::Get().GetCurrentSaveToDiskRowByName().UnlockedSkinsAmount;
+	const int32 TotalSkins = SpotMeshComponent.GetSkinTexturesNum();
+
+	if (!ensureMsgf(UnlockedSkinsAmount <= TotalSkins, TEXT("ASSERT: [%i] %hs:\n Unlocked amount of skins is more than characters has, check the configuration!"), __LINE__, __FUNCTION__))
+	{
+		return;
+	}
+
+	if (ABmrGameState::Get().HasMatchingGameplayTag(FBmrGameStateTag::Menu))
+	{
+		int32 PreviousAmountOfUnlockedSkins = 0;
+		for (int32 SkinIndex = 0; SkinIndex < TotalSkins; SkinIndex++)
+		{
+			if (SpotMeshComponent.IsSkinAvailable(SkinIndex))
+			{
+				PreviousAmountOfUnlockedSkins++;
+				bApplySkin = true;
+			}
+		}
+		// do nothing skins amount is not changed
+		if (PreviousAmountOfUnlockedSkins != 1 && PreviousAmountOfUnlockedSkins == UnlockedSkinsAmount + 1)
+		{
+			return;
+		}
+	}
+
+	// Mark every earned slot from base, so auto-applied earned skin stays available even when spot currently shows higher default skin
+	for (int32 Index = 0; Index <= UnlockedSkinsAmount; Index++)
+	{
+		SpotMeshComponent.SetSkinAvailable(true, Index);
+	}
+
+	if (bApplySkin)
+	{
+		// Apply only the highest unlocked skin once
+		SpotMeshComponent.ApplySkinByIndex(UnlockedSkinsAmount);
+		PlayerState->SetChosenMeshData(SpotMeshComponent.GetMeshData());
 	}
 }
 
-//  Is called when a player has been changed 
-void UPSSpotComponent::OnLocalCharacterReady_Implementation(APlayerCharacter* PlayerCharacter, int32 CharacterID)
+// Returns true if this is a current spot
+bool UPSSpotComponent::IsCurrentSpot() const
 {
-	if (PlayerCharacter->GetPlayerTag() == GetMeshChecked().GetPlayerTag())
-	{
-		PlayerSpotOnLevelInternal = GetMeshChecked();
-		OnSpotComponentReady.Broadcast(this);
-	}
-}
-
-// Locks the player spot when progression for level achieved 
-void UPSSpotComponent::ChangeSpotVisibilityStatus()
-{
-	// Locks and unlocks the spot depends on the current level progression status
-	if (PlayerSpotOnLevelInternal)
-	{
-		FPSSaveToDiskData SaveToDiskDataRow = UPSWorldSubsystem::Get().GetCurrentSaveToDiskRowByName();
-		PlayerSpotOnLevelInternal->SetActive(!SaveToDiskDataRow.IsLevelLocked);
-	}
+	const ABmrPlayerState* PlayerState = UBmrBlueprintFunctionLibrary::GetLocalPlayerState();
+	const FBmrPlayerTag& PlayerTag = PlayerState ? PlayerState->GetPlayerTag() : FBmrPlayerTag::None;
+	return PlayerState && GetMeshChecked().GetPlayerTag() == PlayerTag;
 }

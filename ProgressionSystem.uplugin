@@ -26,11 +26,19 @@
 	"BuiltInInitialFeatureState": "Registered",
 	"Plugins": [
 		{
-			"Name": "MyEditorUtils",  
+			"Name": "GameplayAbilities",
 			"Enabled": true
 		},
 		{
-			"Name": "PoolManager", 
+			"Name": "MyEditorUtils",
+			"Enabled": true
+		},
+		{
+			"Name": "GameFeaturePluginsManager",
+			"Enabled": true
+		},
+		{
+			"Name": "PoolManager",
 			"Enabled": true
 		},
 		{
@@ -39,6 +47,10 @@
 		},
 		{
 			"Name": "SettingsWidgetConstructor",
+			"Enabled": true
+		},
+		{
+			"Name": "DataAssetsLoader",
 			"Enabled": true
 		}
 	]

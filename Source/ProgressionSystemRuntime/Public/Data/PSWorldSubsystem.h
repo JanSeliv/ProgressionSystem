@@ -2,58 +2,70 @@
 
 #pragma once
 
+#include "Data/PoolObjectHandle.h"
 #include "PSTypes.h"
-#include "Subsystems/WorldSubsystem.h"
-#include "PoolManagerTypes.h"
+#include "Subsystems/GfpmWorldSubsystem.h"
+
 #include "PSWorldSubsystem.generated.h"
 
-enum class ECurrentGameState : uint8;
 enum class EPSStarActorState : uint8;
 
 /**
- * Implements the world subsystem to access different components in the module 
+ * Implements the world subsystem to access different components in the module
  */
 UCLASS(BlueprintType, Blueprintable, Config = "ProgressionSystem", DefaultConfig)
-class PROGRESSIONSYSTEMRUNTIME_API UPSWorldSubsystem : public UWorldSubsystem
+class PROGRESSIONSYSTEMRUNTIME_API UPSWorldSubsystem : public UGfpmWorldSubsystem
 {
 	GENERATED_BODY()
 
 public:
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCurrentRowDataChanged, const FPlayerTag, SavedProgressionRowData);
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FPSOnInitialize);
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCurrentActiveSaveRowChanged, const FBmrPlayerTag, NewPlayerTag, const FBmrPlayerTag, PreviousPlayerTag);
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FPSOnCurrentScoreChanged, const FPSSaveToDiskData&, CurrenSaveToDiskDataRow, const FPSSettingsRow&, CurrenProgressionSettingsRow);
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FPSOnReset);
 
 	/** Returns this Subsystem, is checked and will crash if it can't be obtained.*/
 	static UPSWorldSubsystem& Get();
 	static UPSWorldSubsystem& Get(const UObject& WorldContextObject);
 
+	/** Returns this Subsystem or nullptr if not available */
+	static UPSWorldSubsystem* GetSubsystem();
+
 	/** Is called to initialize the world subsystem. It's a BeginPlay logic for the PS module */
-	UFUNCTION(BlueprintNativeEvent, Category= "C++", meta = (BlueprintProtected))
+	UFUNCTION(BlueprintNativeEvent, Category = "C++", meta = (BlueprintProtected))
 	void OnWorldSubSystemInitialize();
 
 	/** Cleanup used on unloading module to remove properties that should not be available by other objects. */
 	UFUNCTION(BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
 	void PerformCleanUp();
-	
+
 	/** Set current row of progression system by tag*/
 	UFUNCTION(BlueprintCallable, Category = "C++")
-	void SetCurrentRowByTag(FPlayerTag NewRowPlayerTag);
+	void SetCurrentRowByTag(FBmrPlayerTag NewRowPlayerTag);
 
-	/* Delegate for informing row data changed */
+	/* Each level has its own row. Each row is tied to a character
+	 * Delegate is called after chosen mesh is applied for the current active save row,
+	 * fires on character switch (NewPlayerTag != PreviousPlayerTag) and on skin-only updates within the same character (NewPlayerTag == PreviousPlayerTag) */
 	UPROPERTY(BlueprintAssignable, Transient, Category = "C++")
-	FCurrentRowDataChanged OnCurrentRowDataChanged;
+	FCurrentActiveSaveRowChanged OnCurrentActiveSaveRowChanged;
 
 	/* Delegate for informing save game file is loaded/created if empty */
 	UPROPERTY(BlueprintAssignable, Transient, Category = "C++")
-	FPSOnInitialize OnInitialize;
+	FPSOnCurrentScoreChanged OnCurrentScoreChanged;
 
-	/** Returns the data asset that contains all the assets of Progression System game feature.
-	 * @see UPSWorldSubsystem::PSDataAssetInternal. */
+	/* Delegate for informing that save game file is reset */
+	UPROPERTY(BlueprintAssignable, Transient, Category = "C++")
+	FPSOnReset OnReset;
+
+	/** Returns the Save file versioning extension to avoid issues with conflicting save file versioning.
+	 * @see UPSWorldSubsytem::SaveFileVersionExtensionInternal. */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "C++")
-	const class UPSDataAsset* GetPSDataAsset() const;
+	FORCEINLINE int32 GetSaveFileVersionExtension() const { return SaveFileVersionExtensionInternal; }
 
 	/** Returns a progression System component reference */
 	UFUNCTION(BlueprintPure, Category = "C++")
-	FORCEINLINE class UPSHUDComponent* GetProgressionSystemHUDComponent() const { return PSHUDComponentInternal; }
+	FORCEINLINE class UPSHUDComponent* GetProgressionSystemHUDComponent() const { return HUDComponentInternal; }
 
 	/** Returns a current progression row name */
 	UFUNCTION(BlueprintPure, Category = "C++")
@@ -71,9 +83,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "C++")
 	const FPSSaveToDiskData& GetCurrentSaveToDiskRowByName() const;
 
-	/** Returns a current progression row settings data row by name */
+	/** Returns a current progression settings data row */
 	UFUNCTION(BlueprintPure, Category = "C++")
-	const FPSRowData& GetCurrentProgressionSettingsRowByName() const;
+	const FPSSettingsRow& GetCurrentProgressionSettingsRow() const;
+
+	/** Returns a current progression settings data row by name. */
+	UFUNCTION(BlueprintPure, Category = "C++")
+	const FPSSettingsRow& GetSettingsRowByName(FName CurrentRowName) const;
 
 	/** Set the progression system component */
 	UFUNCTION(BlueprintCallable, Category = "C++")
@@ -83,9 +99,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "C++")
 	void RegisterSpotComponent(class UPSSpotComponent* MyHUDComponent);
 
-	/** Set the progression system spot component */
+	/** Re-evaluates every registered spot's locked state from own save row, so availability stays correct for all spots. */
 	UFUNCTION(BlueprintCallable, Category = "C++")
-	void SetCurrentSpotComponent(class UPSSpotComponent* MyHUDComponent);
+	void RefreshSpotsAvailability();
 
 	/** Saves the progression to the local files */
 	UFUNCTION()
@@ -99,33 +115,35 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "C++")
 	void UnlockAllLevels();
 
-	/** Returns difficultyMultiplier */
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="C++")
-	float GetDifficultyMultiplier() const;
-
 	/** Returns current spot component returns null if spot is not found */
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="C++")
-	UPSSpotComponent* GetCurrentSpot() const;
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "C++")
+	FORCEINLINE class UPSSpotComponent* GetCurrentSpot() const { return FindSpotByRowName(CurrentRowNameInternal); }
+
+	/** Find a spot component element by row name */
+	UFUNCTION(BlueprintPure, Category = "C++")
+	class UPSSpotComponent* FindSpotByRowName(FName RowName) const;
+
+	/** Returns Progression Star Dynamic Material by state
+	 * Each state has own instance Dynamic Material Instance
+	 * @param StarState a star state (Locked, Unlocked, Partial) */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "C++")
+	class UMaterialInstanceDynamic* GetStarProgressionDynamicMaterial(EPSStarActorState StarState);
 
 protected:
-	/** Contains all the assets and tweaks of Progression System game feature.
-	 * Note: Since Subsystem is code-only, there is config property set in BaseProgressionSystem.ini.
-	 * Property is put to subsystem because its instance is created before any other object.
-	 * It can't be put to DevelopSettings class because it does work properly for MGF-modules. */
-	UPROPERTY(Config, VisibleInstanceOnly, BlueprintReadWrite, Category = "C++", meta = (BlueprintProtected, DisplayName = "Progression System Data Asset"))
-	TSoftObjectPtr<const class UPSDataAsset> PSDataAssetInternal;
+	/** Extension to a save file to increment with a new build
+	 * Note: it's config property stored in BaseProgressionSystem.ini and going to be changed frequently.
+	 * Intentionally added to the config-ini instead of Data Asset, as it's not for designers
+	 */
+	UPROPERTY(Config, VisibleInstanceOnly, BlueprintReadWrite, Category = "C++", meta = (BlueprintProtected, DisplayName = "Save File Version Extentsion"))
+	int32 SaveFileVersionExtensionInternal;
 
 	/** Progression System component reference*/
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Transient, Category = "C++", meta = (BlueprintProtected, DisplayName = "Progression System HUD Component"))
-	TObjectPtr<class UPSHUDComponent> PSHUDComponentInternal = nullptr;
+	TObjectPtr<class UPSHUDComponent> HUDComponentInternal = nullptr;
 
-	/** Progression System Array of Spot Components */
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Transient, Category = "C++", meta = (BlueprintProtected, DisplayName = "Progression System Spot Array"))
-	TArray<class UPSSpotComponent*> PSSpotComponentArrayInternal;
-
-	/** Progression System Spot Component reference*/
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Transient, Category = "C++", meta = (BlueprintProtected, DisplayName = "Progression System Spot Component"))
-	TObjectPtr<class UPSSpotComponent> PSCurrentSpotComponentInternal = nullptr;
+	/** Stores list of FNames (tags converted to FName) in order to later in runtime find from TMap<FName, SaveToDiskFile> by FName. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Transient, Category = "C++", meta = (BlueprintProtected, DisplayName = "Progression System Spot Map"))
+	TMap<FName /*Row*/, TObjectPtr<class UPSSpotComponent>> SpotComponentsMapInternal;
 
 	/** Store the current save game instance
 	 * Contains the FPSSaveToDiskData which has actual data from save file */
@@ -134,7 +152,7 @@ protected:
 
 	/** Store default values from the progression settings data table cached once on load and never changed later */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Transient, Category = "C++", meta = (BlueprintProtected, DisplayName = "Save Game Instance"))
-	TMap<FName, FPSRowData> ProgressionSettingsDataInternal;
+	TMap<FName /*Row*/, FPSSettingsRow> ProgressionSettingsDataInternal;
 
 	/** Store the current row name */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Transient, Category = "C++", meta = (BlueprintProtected, DisplayName = "Current Row Name"))
@@ -145,60 +163,65 @@ protected:
 	TArray<FPoolObjectHandle> PoolActorHandlersInternal;
 
 	/** Store the material for dynamic progress material fill for a star actor */
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Category = "C++", meta = (BlueprintProtected, DisplayName = "Star Dynamic Progress Material"))
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Transient, AdvancedDisplay, Category = "C++", meta = (BlueprintProtected, DisplayName = "Star Dynamic Progress Material"))
 	TObjectPtr<class UMaterialInstanceDynamic> StarDynamicProgressMaterial = nullptr;
 
+	/** Store the material for locked progress material fill for a star actor */
+	UPROPERTY(BlueprintReadWrite, Transient, AdvancedDisplay, Category = "C++", meta = (BlueprintProtected, DisplayName = "Star Locked Progress Material"))
+	TObjectPtr<class UMaterialInstanceDynamic> StarLockedProgressMaterial = nullptr;
+
+	/** Store the material for unlocked progress material fill for a star actor */
+	UPROPERTY(BlueprintReadWrite, Transient, AdvancedDisplay, Category = "C++", meta = (BlueprintProtected, DisplayName = "Star Unlocked Progress Material"))
+	TObjectPtr<class UMaterialInstanceDynamic> StarUnLockedProgressMaterial = nullptr;
+
 	/*********************************************************************************************
-	* Protected functions
-	********************************************************************************************* */
+	 * Protected functions
+	 ********************************************************************************************* */
 protected:
 	/** Called when progression module ready
 	 * Once the save file is loaded it activates the functionality of this class */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
 	void OnInitialized();
-	
-	/** Called when world is ready to start gameplay before the game mode transitions to the correct state and call BeginPlay on all actors */
-	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 
-	/** Clears all transient data created by this subsystem. */
-	virtual void Deinitialize() override;
+	/** Clears all transient data created by this subsystem */
+	virtual void OnGameFeatureDeinitialize_Implementation() override;
 
 	/** Is called when a player character is ready */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
-	void OnLocalCharacterReady(class APlayerCharacter* PlayerCharacter, int32 CharacterID);
+	void OnLocalPawnReady(const struct FGameplayEventData& Payload);
 
 	/** Is called when a player has been changed */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
-	void OnPlayerTypeChanged(FPlayerTag PlayerTag);
+	void OnChosenMeshDataChanged(const struct FBmrMeshData& NewMeshData);
 
-	/** Called when the current game state was changed. */
+	/** Listen to react when entered the Menu state. */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
-	void OnGameStateChanged(ECurrentGameState CurrentGameState);
+	void OnGameStateChanged(const struct FGameplayEventData& Payload);
+
+	/** Called when the end game state was changed to recalculate progression according to endgame (win, loss etc.)  */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
+	void OnEndGameStateChanged(EBmrEndGameState EndGameState);
+
+	/** Save the progression depends on EBmrEndGameState. */
+	UFUNCTION(BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
+	void SavePoints(EBmrEndGameState EndGameState);
 
 	/** Set first element as current active */
-	UFUNCTION(BlueprintCallable, Category= "C++", meta = (BlueprintProtected))
+	UFUNCTION(BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
 	void SetFirstElementAsCurrent();
 
 	/** Updates the stars actors for a spot by Spawning/adding the stars actors for a spot */
-	UFUNCTION(BlueprintCallable, Category="C++", meta=(BlueprintProtected))
+	UFUNCTION(BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
 	void UpdateProgressionStarActors();
 
 	/**
 	 * Dynamically adds Star actors which representing unlocked and locked progression above the character
 	 * @param CreatedObjects - Handles of objects from Pool Manager
 	 */
-	UFUNCTION(BlueprintCallable, Category= "C++")
+	UFUNCTION(BlueprintCallable, Category = "C++")
 	void OnTakeActorsFromPoolCompleted(const TArray<FPoolObjectData>& CreatedObjects);
-
-	/** Triggers when a spot is loaded */
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category="C++", meta=(BlueprintProtected))
-	void OnSpotComponentLoad(class UPSSpotComponent* SpotComponent);
 
 	/** Is called from AsyncLoadGameFromSlot once Save Game is loaded, or null if it failed to load. */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
-	void OnAsyncLoadGameFromSlotCompleted(const FString& SlotName, int32 UserIndex, class USaveGame* SaveGame);
-
-	/** Is called to update the stars actors and in widgets when finish to save date in save file */
-	UFUNCTION(BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
-	void UpdateProgressionUI();
+	void OnAsyncLoadGameFromSlotCompleted(class USaveGame* SaveGame);
 };

@@ -6,23 +6,25 @@ public class ProgressionSystemRuntime : ModuleRules
 {
 	public ProgressionSystemRuntime(ReadOnlyTargetRules Target) : base(Target)
 	{
-		CppStandard = CppStandardVersion.Latest; 
-		bEnableNonInlinedGenCppWarnings = true;
+	    CppCompileWarningSettings.NonInlinedGenCppWarningLevel = WarningLevel.Error;
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		PublicDependencyModuleNames.AddRange(new[]
 			{
-				"Core", "UMG" 
+				"Core", "UMG"
 				// Bomber modules
 				, "Bomber"
+				, "GameFeaturePluginsManager" // Inherited UGfpmWorldSubsystem
+				, "DataAssetsLoader" // Created UPSDataAsset
 				,"SettingsWidgetConstructor"
 			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(new[]
 			{
-				"CoreUObject", "Engine", "Slate", "SlateCore", // Core
+				"CoreUObject", "Engine", "Slate", "SlateCore" // Core
+				, "GameplayTags", "GameplayAbilities" // Tags
 				// Bomber modules 
-				"MyUtils" 
+				, "MyUtils" 
 				, "PoolManager" // Star and Widget Actors
 				, "MetaCheatManager" // PSCheatExtension
 			}

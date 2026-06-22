@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "Bomber.h"
-#include "Structures/PlayerTag.h"
+#include "Structures/BmrPlayerTag.h"
 #include "Engine/DataTable.h"
 #include "PSTypes.generated.h"
 
@@ -12,22 +11,18 @@
  * Initial load performed once based on the data in the DT Table and never changed later
  */
 USTRUCT(BlueprintType)
-struct FPSRowData : public FTableRowBase
+struct FPSSettingsRow : public FTableRowBase
 {
 	GENERATED_BODY()
 
-	static const FPSRowData EmptyData;
+	static const FPSSettingsRow EmptyData;
 
 	/** Default constructor. */
-	FPSRowData() = default;
-
-	/** Stores the value of the map for progression system component */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="C++")
-	ELevelType Map = ELevelType::None;
+	FPSSettingsRow() = default;
 
 	/** Contains the character player tag used in the save/load progression system */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="C++")
-	FPlayerTag Character = FPlayerTag::None;
+	FBmrPlayerTag Character = FBmrPlayerTag::None;
 
 	/** Transform of Stars above the character on a level */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="C++")
@@ -41,11 +36,6 @@ struct FPSRowData : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="C++")
 	float PointsToUnlock = 0.f;
 
-	/** Base scores per end-game result before applying difficulty multiplier. E.g. the number of stars a player receives upon winning the game. 
-	* If End-Game state is not matching with game result, 0 score will be granted by default. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category="C++", meta = (DisplayName = "Progression End Game States"))
-	TMap<EEndGameState, float> ProgressionEndGameValues;
-
 	/** Defines the star animations for each character called when in-game cinematic played */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="C++")
 	TObjectPtr<class UCurveTable> HideStarsAnimation = nullptr;
@@ -53,6 +43,9 @@ struct FPSRowData : public FTableRowBase
 	/** Defines the star animations for each character called when in-game cinematic played */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="C++")
 	TObjectPtr<class UCurveTable> MenuStarsAnimation = nullptr;
+
+	/** Returns true is this does not contain any data. */
+	bool FORCEINLINE IsValid() const { return Character.IsValid() && PointsToUnlock > 0.f; }
 };
 
 /**
@@ -77,16 +70,19 @@ struct FPSSaveToDiskData
 	/** Defines if level is locked or not */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="C++")
 	bool IsLevelLocked = true;
+
+	/* Stores the amount of total unlocked skins index */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="C++")
+	int32 UnlockedSkinsAmount = 0;
 };
 
-
 /**
- * Represents the state of the overlay widget fade animation played in the menu.
+ * Represents animations of the overlay widget animations played in the menu
  */
-UENUM(BlueprintType, DisplayName = "Overlay Widget Fade Animation State")
-enum class EPSOverlayWidgetFadeState : uint8
+UENUM(BlueprintType, DisplayName = "Overlay Widget Animation Type")
+enum class EPSOverlayWidgetAnimationName : uint8
 {
-	///< Is not in the Menu
+	///< Default fade no animation required
 	None,
 	///< Fade-it animation
 	FadeIn,
@@ -95,9 +91,23 @@ enum class EPSOverlayWidgetFadeState : uint8
 };
 
 /**
+ * Represents type of the overlay widget animation played in the menu.
+ */
+UENUM(BlueprintType, DisplayName = "Overlay Widget Animation Type")
+enum class EPSOverlayWidgetAnimationType : uint8
+{
+	///< no type to be applied
+	None,
+	///< Fade type animation
+	Fade,
+	///< Instant (no animation) type 
+	Instant,
+};
+
+/**
  * Represents the state of the stars states displayed in the main menu
  */
-UENUM(BlueprintType, DisplayName = "Overlay Widget Fade Animation State")
+UENUM(BlueprintType, DisplayName = "Progression Stars State")
 enum class EPSStarActorState : uint8
 {
 	///< Is not defined
@@ -106,4 +116,6 @@ enum class EPSStarActorState : uint8
 	Locked,
 	///< Star is unlocked 
 	Unlocked,
+	///< Star is partially unlocked
+	Partial
 };

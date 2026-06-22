@@ -1,21 +1,30 @@
 // Copyright (c) Valerii Rotermel and Yevhenii Selivanov
 
-
 #include "LevelActors/PSStarActor.h"
 
-#include "PoolManagerSubsystem.h"
-#include "Components/StaticMeshComponent.h"
-#include "Controllers/MyPlayerController.h"
+// PS
+#include "Components/PSSpotComponent.h"
 #include "Data/PSDataAsset.h"
 #include "Data/PSTypes.h"
 #include "Data/PSWorldSubsystem.h"
-#include "Engine/World.h"
-#include "GameFramework/MyGameStateBase.h"
-#include "LevelActors/PlayerCharacter.h"
-#include "Materials/MaterialInstanceDynamic.h"
+
+// Bomber
+#include "Actors/BmrPawn.h"
+#include "Components/BmrSkeletalMeshComponent.h"
+#include "Controllers/BmrPlayerController.h"
+#include "DalRegistrySubsystem.h"
+#include "DataRegistries/BmrBombRow.h"
 #include "MyUtilsLibraries/GameplayUtilsLibrary.h"
-#include "Subsystems/GlobalEventsSubsystem.h"
-#include "UtilityLibraries/MyBlueprintFunctionLibrary.h"
+#include "PoolManagerSubsystem.h"
+#include "Structures/BmrGameStateTag.h"
+#include "Structures/BmrGameplayTags.h"
+#include "Subsystems/GlobalMessageSubsystem.h"
+
+// UE
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PSStarActor)
 
@@ -34,11 +43,19 @@ void APSStarActor::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Listen to hande when local character is ready 
-	BIND_ON_LOCAL_CHARACTER_READY(this, ThisClass::OnLocalCharacterReady);
+	// Listen to hande when local character is ready
+	UGlobalMessageSubsystem::CallOrStartListeningForGlobalMessage(BmrGameplayTags::Event::Player_LocalPawnReady, this, &ThisClass::OnLocalPawnReady);
 
 	// Listen to handle input for each game state
-	BIND_ON_GAME_STATE_CHANGED(this, ThisClass::OnGameStateChanged);
+	UGlobalMessageSubsystem::CallOrStartListeningForGlobalMessage(BmrGameplayTags::Event::GameState_Changed, this, &ThisClass::OnGameStateChanged);
+}
+
+// Called when this actor is explicitly being destroyed during gameplay or in the editor, not called during level streaming or gameplay ending
+void APSStarActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	UGlobalMessageSubsystem::StopListeningForAllGlobalMessages(this);
+
+	Super::EndPlay(EndPlayReason);
 }
 
 // Function called every frame on this Actor
@@ -59,19 +76,20 @@ void APSStarActor::Tick(float DeltaTime)
 }
 
 // When a local character load finished
-void APSStarActor::OnLocalCharacterReady_Implementation(APlayerCharacter* Character, int32 CharacterID)
+void APSStarActor::OnLocalPawnReady_Implementation(const FGameplayEventData& Payload)
 {
-	AMyPlayerController* LocalPC = Character ? Character->GetController<AMyPlayerController>() : nullptr;
+	const ABmrPawn* Character = Cast<ABmrPawn>(Payload.Instigator);
+	ABmrPlayerController* LocalPC = Character ? Character->GetController<ABmrPlayerController>() : nullptr;
 	if (ensureMsgf(LocalPC, TEXT("ASSERT: [%i] %hs:\n'LocalPC' is null!"), __LINE__, __FUNCTION__))
 	{
-		LocalPC->OnAnyCinematicStarted.AddDynamic(this, &APSStarActor::OnAnyCinematicStarted);
+		LocalPC->OnAnyCinematicStarted.AddUniqueDynamic(this, &APSStarActor::OnAnyCinematicStarted);
 	}
 }
 
 // Called when the current game state was changed
-void APSStarActor::OnGameStateChanged_Implementation(ECurrentGameState GameState)
+void APSStarActor::OnGameStateChanged_Implementation(const FGameplayEventData& Payload)
 {
-	if (GameState == ECurrentGameState::Menu)
+	if (Payload.InstigatorTags.HasTag(FBmrGameStateTag::Menu))
 	{
 		SetStartTimeMenuStars();
 		TryPlayMenuStarAnimation();
@@ -92,7 +110,7 @@ void APSStarActor::OnAnyCinematicStarted_Implementation(const UObject* LevelSequ
 // Hiding stars with animation in main menu when cinematic is start to play
 void APSStarActor::TryPlayHideStarAnimation()
 {
-	const FPSRowData& CurrentProgressionSettingsRow = UPSWorldSubsystem::Get().GetCurrentProgressionSettingsRowByName();
+	const FPSSettingsRow& CurrentProgressionSettingsRow = UPSWorldSubsystem::Get().GetCurrentProgressionSettingsRow();
 	const bool bIsFinished = !TryPlayStarAnimation(StartTimeHideStarsInternal, CurrentProgressionSettingsRow.HideStarsAnimation);
 	if (bIsFinished)
 	{
@@ -101,10 +119,10 @@ void APSStarActor::TryPlayHideStarAnimation()
 	}
 }
 
-// Menu stars with animation in main menu idle 
+// Menu stars with animation in main menu idle
 void APSStarActor::TryPlayMenuStarAnimation()
 {
-	const FPSRowData& CurrentProgressionSettingsRow = UPSWorldSubsystem::Get().GetCurrentProgressionSettingsRowByName();
+	const FPSSettingsRow& CurrentProgressionSettingsRow = UPSWorldSubsystem::Get().GetCurrentProgressionSettingsRow();
 	const bool bIsFinished = !TryPlayStarAnimation(StartTimeMenuStarsInternal, CurrentProgressionSettingsRow.MenuStarsAnimation);
 	if (bIsFinished)
 	{
@@ -147,7 +165,7 @@ void APSStarActor::SetStartTimeMenuStars()
 //  Is get called when a Star actor is initialized
 void APSStarActor::OnInitialized(const FVector& PreviousActorLocation)
 {
-	const FPSRowData& CurrentProgressionSettingsRow = UPSWorldSubsystem::Get().GetCurrentProgressionSettingsRowByName();
+	const FPSSettingsRow& CurrentProgressionSettingsRow = UPSWorldSubsystem::Get().GetCurrentProgressionSettingsRow();
 	FTransform DesiredTransform = CurrentProgressionSettingsRow.StarActorTransform;
 
 	// set offset from previous if it's not first
@@ -162,29 +180,87 @@ void APSStarActor::OnInitialized(const FVector& PreviousActorLocation)
 }
 
 //  Updates star actors Mesh material to the Locked Star, Unlocked or partially achieved
-void APSStarActor::UpdateStarActorMeshMaterial(UMaterialInstanceDynamic* StarDynamicProgressMaterial, float AmountOfStars, EPSStarActorState StarActorState)
+void APSStarActor::UpdateStarActorProgressMeshMaterial(float AmountOfStars, EPSStarActorState StarActorState)
 {
-	if (!ensureMsgf(StarDynamicProgressMaterial, TEXT("ASSERT: [%i] %hs:\n'StarDynamicProgressMaterial' is not valid!"), __LINE__, __FUNCTION__)
-		|| !ensureMsgf(StarMeshComponent, TEXT("ASSERT: [%i] %hs:\n'StarMeshComponent' is not valid!"), __LINE__, __FUNCTION__))
+	if (!ensureMsgf(StarMeshComponent, TEXT("ASSERT: [%i] %hs:\n'StarMeshComponent' is not valid!"), __LINE__, __FUNCTION__))
 	{
 		return; // Early return if pointers are invalid
 	}
 
+	UMaterialInstanceDynamic* StarProgressionDynamicMaterial = nullptr;
+
 	// locked stars
 	if (StarActorState == EPSStarActorState::Locked)
 	{
-		StarMeshComponent->SetMaterial(0, UPSDataAsset::Get().GetLockedProgressionMaterial());
+		const float LockedStar = 0.0f;
+		StarProgressionDynamicMaterial = UPSWorldSubsystem::Get().GetStarProgressionDynamicMaterial(EPSStarActorState::Locked);
+		SetStarActorProgressMeshMaterial(StarProgressionDynamicMaterial, LockedStar);
 		return;
 	}
 
 	// unlocked stars with fractional part
 	if (AmountOfStars > 0 && AmountOfStars < 1)
 	{
-		StarMeshComponent->SetMaterial(0, StarDynamicProgressMaterial);
-		StarDynamicProgressMaterial->SetScalarParameterValue(UPSDataAsset::Get().GetStarMaterialSlotName(), AmountOfStars / UPSDataAsset::Get().GetStarMaterialFractionalDivisor()); // StarMaterialFractionalDivisor is hardcoded value to 3 to tweak bad UV to simulate it's working
+		StarProgressionDynamicMaterial = UPSWorldSubsystem::Get().GetStarProgressionDynamicMaterial(EPSStarActorState::Partial);
+		SetStarActorProgressMeshMaterial(StarProgressionDynamicMaterial, AmountOfStars);
 		return; // Early return for fractional stars
 	}
 
 	// unlocked stars EPSStarActorState::Unlocked
-	StarMeshComponent->SetMaterial(0, UPSDataAsset::Get().GetUnlockedProgressionMaterial());
+	const float UnLockedStarAmount = 1.0f;
+	StarProgressionDynamicMaterial = UPSWorldSubsystem::Get().GetStarProgressionDynamicMaterial(EPSStarActorState::Unlocked);
+	SetStarActorProgressMeshMaterial(StarProgressionDynamicMaterial, UnLockedStarAmount);
+}
+
+// Applies the star dynamic material
+void APSStarActor::SetStarActorProgressMeshMaterial(class UMaterialInstanceDynamic* StarDynamicMaterial, float StarProgressionAmount)
+{
+	checkf(StarMeshComponent, TEXT("ERROR: [%i] %hs:\n'StarMeshComponent' is null!"), __LINE__, __FUNCTION__);
+
+	if (!ensureMsgf(StarDynamicMaterial, TEXT("ASSERT: [%i] %hs:\n'StarDynamicMaterial' is not valid!"), __LINE__, __FUNCTION__))
+	{
+		return; // Early return if pointers are invalid
+	}
+
+	const UPSSpotComponent* SpotComponent = UPSWorldSubsystem::Get().GetCurrentSpot();
+
+	const FName StarProgressionMaterialSlotName = UPSDataAsset::Get().GetStarMaterialSlotName();
+
+	ChangeStarMesh(SpotComponent);
+
+	StarDynamicMaterial->SetScalarParameterValue(StarProgressionMaterialSlotName, StarProgressionAmount);
+	StarMeshComponent->SetOverlayMaterial(StarDynamicMaterial);
+}
+
+// Changes current bomb mesh to current spot bomb mesh
+void APSStarActor::ChangeStarMesh(const UPSSpotComponent* SpotComponent)
+{
+	if (!ensureMsgf(SpotComponent, TEXT("ASSERT: [%i] %hs:\n'SpotComponent' is not valid!"), __LINE__, __FUNCTION__))
+	{
+		return; // Early return if pointers are invalid
+	}
+
+	const FBmrPlayerTag& PlayerTag = SpotComponent->GetMeshChecked().GetPlayerTag();
+	const FName BombRowName = FBmrBombRow::GetRowNameByPredicate([&PlayerTag](const FBmrBombRow& Row)
+	{
+		return Row.PlayerTag == PlayerTag;
+	});
+	const FBmrBombRow* BombRow = !BombRowName.IsNone() ? FBmrBombRow::GetRowByName(BombRowName) : nullptr;
+	UStaticMesh* BombMesh = BombRow ? Cast<UStaticMesh>(BombRow->Mesh.Get()) : nullptr;
+	if (!BombMesh
+	    && ensureMsgf(!BombRowName.IsNone(), TEXT("ASSERT: [%i] %hs:\n'BombMesh' is not valid for BombRowName=%s!"), __LINE__, __FUNCTION__, *BombRowName.ToString()))
+	{
+		// Soft mesh not loaded yet, wait until loaded
+		UDalRegistrySubsystem::Get().ListenForDataRegistryRow<FBmrBombRow>(this, BombRowName, [this, WeakSpot = TWeakObjectPtr(SpotComponent)](const FBmrBombRow&)
+		{
+			if (const UPSSpotComponent* StillValidSpot = WeakSpot.Get())
+			{
+				ChangeStarMesh(StillValidSpot);
+			}
+		});
+		return;
+	}
+
+	StarMeshComponent->SetMaterial(0, nullptr);
+	StarMeshComponent->SetStaticMesh(BombMesh);
 }

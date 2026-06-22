@@ -2,13 +2,14 @@
 
 #pragma once
 
-#include "Data/PSTypes.h"
 #include "Components/ActorComponent.h"
+#include "Data/PSTypes.h"
+
 #include "PSSpotComponent.generated.h"
 
 /**
  * Represents a spot where a character can be selected in the Main Menu.
- * Is added dynamically to the My Skeletal Mesh actors on the level.
+ * Is added dynamically to the Bmr Skeletal Mesh actors on the level.
  */
 UCLASS(Blueprintable, BlueprintType, ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class PROGRESSIONSYSTEMRUNTIME_API UPSSpotComponent : public UActorComponent
@@ -16,49 +17,54 @@ class PROGRESSIONSYSTEMRUNTIME_API UPSSpotComponent : public UActorComponent
 	GENERATED_BODY()
 
 public:
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FPSSpotComponent, UPSSpotComponent*, SpotComponent);
-
 	// Sets default values for this component's properties
 	UPSSpotComponent();
 
 	/** Returns the Skeletal Mesh of the Bomber character. */
 	UFUNCTION(BlueprintPure, Category = "C++")
-	class UMySkeletalMeshComponent* GetMySkeletalMeshComponent() const;
-	class UMySkeletalMeshComponent& GetMeshChecked() const;
+	class UBmrSkeletalMeshComponent* GetMySkeletalMeshComponent() const;
+	class UBmrSkeletalMeshComponent& GetMeshChecked() const;
 
-	/** Returns a Player's Spot On level (skeletal mesh component) */
-	UFUNCTION(BlueprintPure, Category = "C++")
-	FORCEINLINE class UMySkeletalMeshComponent* GetPlayerSpotOnLevel() const { return PlayerSpotOnLevelInternal; }
+	/** Locks or unlocks this spot's mesh by given level-locked state. */
+	UFUNCTION(BlueprintCallable, Category = "C++")
+	void ChangeSpotVisibilityStatus(bool bIsLevelLocked);
 
-	/* Delegate for informing about loading spot component */
-	UPROPERTY(BlueprintAssignable, Transient, Category = "C++")
-	FPSSpotComponent OnSpotComponentReady;
+	/** Refresh Amount Of Unlocked skins for the character (level) */
+	UFUNCTION(BlueprintCallable, Category = "C++")
+	void RefreshAmountOfUnlockedSkins(bool bApplySkin);
 
-	/** Locks the player spot when progression for level achieved */
-	UFUNCTION(BlueprintCallable, Category= "C++")
-	void ChangeSpotVisibilityStatus();
+	/** Returns true if this is a current spot */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "C++")
+	bool IsCurrentSpot() const;
 
 protected:
 	/** Called when progression module ready
 	 * Once the save file is loaded it activates the functionality of this class */
-	UFUNCTION(BlueprintNativeEvent,BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
-	void OnInitialized();
-	
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
+	void OnInitialized(const struct FGameplayEventData& Payload);
+
+	/** Once the save file is reset the spot component needs to reset skins
+	 * Before progression loaded, the game has all skins available by default.
+	 * But if Progression System plugin is enabled, we are changing the default state only when the first skin unlocked.
+	 * This should happen right after the once the progression spot loaded and the reset cheat activated */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
+	void OnReset();
+
+	/** Listen game states to switch character skin. */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
+	void OnGameStateChanged(const struct FGameplayEventData& Payload);
+
 	// Called when the game starts
 	virtual void BeginPlay() override;
 
 	/** Clears all transient data created by this component. */
 	virtual void OnUnregister() override;
 
-	/** Is called when a player has been changed */
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
-	void OnPlayerTypeChanged(FPlayerTag PlayerTag);
+	/** Updates the progression menu widget when player changed */
+	UFUNCTION(BlueprintNativeEvent, Category = "C++", meta = (BlueprintProtected))
+	void OnCurrentActiveSaveRowChanged(const FBmrPlayerTag NewPlayerTag, const FBmrPlayerTag PreviousPlayerTag);
 
-	/** Is called when a player has been changed */
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
-	void OnLocalCharacterReady(class APlayerCharacter* PlayerCharacter, int32 CharacterID);
-
-	/** A player skeletal mesh actor */
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Transient, Category = "C++", meta = (BlueprintProtected, DisplayName = "Player Spot On Level"))
-	TObjectPtr<UMySkeletalMeshComponent> PlayerSpotOnLevelInternal = nullptr;
+	/** Check is player is allowed to play with current skin if not switch to allowed */
+	UFUNCTION(BlueprintCallable, Category = "C++", meta = (BlueprintProtected))
+	void TryRestorePlayerSkin();
 };
